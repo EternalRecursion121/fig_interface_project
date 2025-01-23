@@ -1,20 +1,25 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import * as d3 from 'd3';
+  import StoryNarrator from '$lib/StoryNarrator.svelte';
+  import InitialSurveyModal from '$lib/InitialSurveyModal.svelte';
 
   let graphContainer;
   let svg;
   let width;
   let height = 400;
-  let margin = { top: 20, right: 20, bottom: 30, left: 80 };
+  let margin = { top: 20, right: 150, bottom: 30, left: 120 };
+
+  // Add showSurvey state
+  let showSurvey = true;
 
   // Modified scenario state
   let scenario = {
     speed: {
-      type: 'slow'
+      type: 'moderate'
     },
     timing: {
-      startYear: 2024,
+      startYear: 2025,
       existentialSecurityAligned: false
     },
     maxAltitude: {
@@ -26,95 +31,160 @@
     progression: {
       type: 'gradual'
     },
-    distribution: {
-      type: 'uniform'
-    },
     moralConsideration: {
-      type: 'coupled',
+      type: 'delayed',
       level: 0.5
+    },
+    expectedValue: {
+      credence: 50,
+      initialCapacity: 1e6,
+      maxCapacity: 1e10
     }
   };
 
-  function generateCurveData() {
+  let currentYear = 2025;
+
+  // First add the constant near the top of the file
+  const HUMAN_POPULATION_WELFARE = 8e9; // ~8 billion humans as reference
+
+  // Initialize xScale with default values
+  let xScale = d3.scaleLinear()
+    .domain([2025, 2085])
+    .range([0, 100]);
+
+  // Make xScale reactive to width changes
+  $: if (width && margin) {
+    xScale = d3.scaleLinear()
+      .domain([2025, 2085])
+      .range([margin.left, width - margin.right]);
+  }
+
+  // Add yScale definition near the other scale definitions
+  let yScale = d3.scaleLog()
+    .domain([1e6, 1e14])
+    .range([0, 100]);
+
+  // Make yScale reactive to height and margin changes
+  $: if (height && margin) {
+    yScale = d3.scaleLog()
+      .domain([1e6, Math.max(
+        HUMAN_POPULATION_WELFARE * 1000,  // Show up to 1000x human population
+        scenario.maxAltitude.type === 'low' ? 1e12 : 1e14  // 1T or 100T
+      )])
+      .range([height - margin.bottom, margin.top]);
+  }
+
+  // Update the marker position reactively
+  $: if (svg && xScale && width) {  // Add width check
+    svg.selectAll('.current-year-marker').remove();
+    
+    // Add new marker with all components
+    const marker = svg.append('g')
+      .attr('class', 'current-year-marker');
+
+    marker.append('line')
+      .attr('x1', xScale(currentYear))
+      .attr('x2', xScale(currentYear))
+      .attr('y1', margin.top)
+      .attr('y2', height - margin.bottom)
+      .attr('stroke', '#ffffff')
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '4,4');
+
+    const currentPoint = generateCurveData().find(d => Math.abs(d.x - currentYear) < 0.5);
+    if (currentPoint) {
+      marker.append('circle')
+        .attr('cx', xScale(currentPoint.x))
+        .attr('cy', yScale(currentPoint.y))
+        .attr('r', 4)
+        .attr('fill', '#ffffff');
+
+      const annotationGroup = marker.append('g')
+        .attr('transform', `translate(${xScale(currentPoint.x) + 10}, ${yScale(currentPoint.y) - 20})`);
+
+      annotationGroup.append('rect')
+        .attr('x', -5)
+        .attr('y', -15)
+        .attr('width', 160)
+        .attr('height', 40)
+        .attr('fill', '#1f2937')
+        .attr('stroke', '#4b5563')
+        .attr('rx', 4)
+        .attr('opacity', 0.9);
+
+      annotationGroup.append('text')
+        .attr('x', 0)
+        .attr('y', 0)
+        .attr('fill', '#ffffff')
+        .attr('font-size', '12px')
+        .text(`Year: ${currentYear}`);
+
+      annotationGroup.append('text')
+        .attr('x', 0)
+        .attr('y', 15)
+        .attr('fill', '#9ca3af')
+        .attr('font-size', '12px')
+        .text(formatWelfareCapacity(currentPoint.y));
+    }
+  }
+
+  export function generateCurveData() {
     const points = 100;
-    const startYear = scenario.timing.startYear;
-    const endYear = 2044;
+    const startYear = 2025;
+    const endYear = 2085;
     const yearRange = endYear - startYear;
     
     return Array.from({length: points}, (_, i) => {
       const x = startYear + (i * yearRange/points);
-      let y;
+      if (x < scenario.timing.startYear) {
+        return { x, y: 1e6 };
+      }
       
-      // Set initial value based on launch height
-      const initialValue = scenario.launchHeight.type === 'high' ? 1e8 : 1e6;
+      let y;
+      const initialValue = Math.max(1e6, scenario.expectedValue?.initialCapacity || 
+                          (scenario.launchHeight.type === 'high' ? 1e8 : 1e6));
+      
+      const progress = i/points;
       
       if (scenario.progression.type === 'discontinuous') {
-        // Create more dramatic jumps for discontinuous progression
-        const jumpPoints = [0.3, 0.6, 0.8];
-        const jumpIndex = jumpPoints.findIndex(jp => i/points < jp);
-        const baseY = initialValue * Math.pow(10, (i/points) * (scenario.speed.type === 'fast' ? 4 : 2));
-        y = baseY * (jumpIndex >= 0 ? Math.pow(4, jumpIndex + 1) : 1);
+        // Create sharper jumps at specific points
+        const jumpPoints = [0.3, 0.5, 0.7];
+        const jumpIndex = jumpPoints.findIndex(jp => progress < jp);
+        
+        // Base growth rate depends on speed
+        const growthRate = 
+          scenario.speed.type === 'fast' ? 5 :
+          scenario.speed.type === 'moderate' ? 4 : 3;
+        
+        // Calculate base value with exponential growth
+        const baseY = initialValue * Math.pow(10, progress * growthRate);
+        
+        // Apply jumps
+        y = baseY * (jumpIndex >= 0 ? Math.pow(10, jumpIndex + 1) : 1);
       } else {
-        // Gradual progression
-        if (scenario.speed.type === 'fast') {
-          y = initialValue * Math.pow(10, (i/points) * 4); // Exponential growth
-        } else {
-          y = initialValue * Math.pow(10, (i/points) * 2); // Slower growth
-        }
+        // Smoother growth for gradual progression
+        const growthRate = 
+          scenario.speed.type === 'fast' ? 5 :
+          scenario.speed.type === 'moderate' ? 4 : 3;
+        
+        y = initialValue * Math.pow(10, progress * growthRate);
       }
 
       // Apply maximum altitude limit
-      const maxY = scenario.maxAltitude.type === 'low' ? 1e10 : 1e11;
+      const maxY = scenario.expectedValue?.maxCapacity || 
+                  (scenario.maxAltitude.type === 'low' ? 1e12 : 1e14);
       y = Math.min(y, maxY);
+
+      // Apply credence and moral consideration
+      const credence = (scenario.expectedValue?.credence || 50) / 100;
+      const moralLevel = scenario.moralConsideration.level;
+      y = y * credence * moralLevel;
+
+      // Ensure minimum value
+      y = Math.max(1e6, y);
 
       return {x, y};
     });
-  }
-
-  function generateMultipleCurves() {
-    if (scenario.distribution.type === 'disuniform') {
-      // Generate 3 different curves for disuniform takeoff
-      return [0, 1, 2].map(offset => {
-        return Array.from({length: 100}, (_, i) => {
-          const x = scenario.timing.startYear + (i * (2044 - scenario.timing.startYear)/100);
-          const initialValue = scenario.launchHeight.type === 'high' ? 1e8 : 1e6;
-          let y;
-
-          if (scenario.progression.type === 'discontinuous') {
-            // Create different jump points for each curve
-            const jumpPoints = [
-              [0.3, 0.6, 0.8],
-              [0.25, 0.55, 0.75],
-              [0.35, 0.65, 0.85]
-            ][offset];
-            
-            const jumpIndex = jumpPoints.findIndex(jp => i/100 < jp);
-            const baseY = initialValue * Math.pow(10, (i/100) * (scenario.speed.type === 'fast' ? 4 : 2));
-            y = baseY * (jumpIndex >= 0 ? Math.pow(4, jumpIndex + 1) : 1);
-            
-            // Add some variation between curves
-            y *= (1 + (offset - 1) * 0.3);
-          } else {
-            // Gradual progression with variation
-            const progress = i/100;
-            const variationFactor = 1 + Math.sin(progress * Math.PI * 2 + offset * Math.PI/2) * 0.3;
-            
-            if (scenario.speed.type === 'fast') {
-              y = initialValue * Math.pow(10, progress * 4) * variationFactor;
-            } else {
-              y = initialValue * Math.pow(10, progress * 2) * variationFactor;
-            }
-          }
-
-          // Apply maximum altitude limit
-          const maxY = scenario.maxAltitude.type === 'low' ? 1e10 : 1e11;
-          y = Math.min(y, maxY);
-
-          return {x, y};
-        });
-      });
-    }
-    return [generateCurveData()];
   }
 
   function formatPowerOfTen(d) {
@@ -125,42 +195,53 @@
     if (power === 9) return "1B";
     if (power === 10) return "10B";
     if (power === 11) return "100B";
+    if (power === 12) return "1T";
+    if (power === 13) return "10T";
+    if (power === 14) return "100T";
     return `10^${power}`;
   }
 
   function generateMoralConsiderationData() {
     const points = 100;
-    const startYear = scenario.timing.startYear;
-    const endYear = 2044;
+    const startYear = 2025;  // Always start from 2025
+    const endYear = 2085;
     const yearRange = endYear - startYear;
     
     return Array.from({length: points}, (_, i) => {
       const x = startYear + (i * yearRange/points);
-      let y;
+      if (x < scenario.timing.startYear) {
+        return { x, y: 1e6 };
+      }
+
       const progress = i/points;
       const baseY = generateCurveData()[i].y;
-      const level = scenario.moralConsideration.level; // Use the slider value
+      const level = scenario.moralConsideration.level;
       
+      let y;
       switch(scenario.moralConsideration.type) {
         case 'coupled':
-          // Follows welfare capacity curve, scaled by level
           y = baseY * level;
           break;
         case 'uncoupled':
-          // Stays flat at level
           y = 1e8 * level;
           break;
         case 'decoupling':
-          // Starts coupled but diverges, affected by level
           y = progress < 0.5 ? 
             baseY * level : 
-            baseY * level * Math.pow(0.8, (progress-0.5)*10);
+            baseY * level * Math.pow(0.5, (progress-0.5)*10);
           break;
         case 'delayed':
-          // Starts low then catches up, scaled by level
-          y = progress < 0.7 ? 
-            1e7 * level : 
-            baseY * level;
+          // Create a sharper transition
+          const transitionPoint = 0.7;
+          const transitionWidth = 0.05;  // Narrower transition
+          if (progress < transitionPoint - transitionWidth) {
+            y = 1e7 * level;
+          } else if (progress > transitionPoint + transitionWidth) {
+            y = baseY * level;
+          } else {
+            const t = (progress - (transitionPoint - transitionWidth)) / (2 * transitionWidth);
+            y = (1e7 * level) * (1-t) + (baseY * level) * t;
+          }
           break;
       }
       return {x, y};
@@ -184,47 +265,31 @@
       .attr('viewBox', `0 0 ${width} ${height}`)
       .attr('style', 'max-width: 100%; height: auto;');
 
-    // Create scales
-    const xScale = d3.scaleLinear()
-      .domain([2024, 2044])
-      .range([margin.left, width - margin.right]);
+    // Wait for xScale to be properly initialized with the correct width
+    if (!width) return;
 
-    const yScale = d3.scaleLog()
-      .domain([1e6, scenario.maxAltitude.type === 'low' ? 1e10 : 1e11])
-      .range([height - margin.bottom, margin.top]);
+    // Add axes with more specific ticks
+    svg.append('g')
+      .attr('transform', `translate(0,${height - margin.bottom})`)
+      .call(d3.axisBottom(xScale)
+        .tickValues([2025, 2035, 2045, 2055, 2065, 2075, 2085])  // Explicit decade ticks
+        .tickFormat(d3.format('d')));
 
-    // Add grid lines
+    // Add grid lines with same tick values
     svg.append('g')
       .attr('class', 'grid')
       .attr('transform', `translate(0,${height - margin.bottom})`)
       .call(d3.axisBottom(xScale)
-        .ticks(10)
+        .tickValues([2025, 2035, 2045, 2055, 2065, 2075, 2085])
         .tickSize(-height + margin.top + margin.bottom)
         .tickFormat(''))
       .style('stroke-opacity', 0.2);
-
-    // Add vertical grid lines for y-axis
-    svg.append('g')
-      .attr('class', 'grid')
-      .attr('transform', `translate(${margin.left},0)`)
-      .call(d3.axisLeft(yScale)
-        .tickValues([1e6, 1e7, 1e8, 1e9, 1e10, 1e11])
-        .tickSize(-width + margin.left + margin.right)
-        .tickFormat(''))
-      .style('stroke-opacity', 0.2);
-
-    // Add axes
-    svg.append('g')
-      .attr('transform', `translate(0,${height - margin.bottom})`)
-      .call(d3.axisBottom(xScale)
-        .ticks(5)
-        .tickFormat(d3.format('d')));
 
     // Improved y-axis with better tick values and formatting
     svg.append('g')
       .attr('transform', `translate(${margin.left},0)`)
       .call(d3.axisLeft(yScale)
-        .tickValues([1e6, 1e7, 1e8, 1e9, 1e10, 1e11])
+        .tickValues([1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14])
         .tickFormat(formatPowerOfTen))
       .call(g => g.selectAll('.tick text')
         .style('font-size', '12px'));
@@ -243,8 +308,8 @@
       .attr('text-anchor', 'middle')
       .text('Welfare Capacity');
 
-    // Generate and add welfare capacity curves
-    const curves = generateMultipleCurves();
+    // Generate and add welfare capacity curve
+    const curveData = generateCurveData();
     
     const line = d3.line()
       .x(d => xScale(d.x))
@@ -262,33 +327,36 @@
         .attr('class', 'existential-risk-zone');
     }
 
-    // Add welfare capacity curves
-    curves.forEach((curveData, i) => {
-      svg.append('path')
-        .datum(curveData)
-        .attr('fill', 'none')
-        .attr('stroke', scenario.distribution.type === 'disuniform' ? 
-          d3.schemeSet2[i] : '#60a5fa')
-        .attr('stroke-width', 2)
-        .attr('d', line);
-    });
+    // Add welfare capacity curve
+    svg.append('path')
+      .datum(curveData)
+      .attr('fill', 'none')
+      .attr('stroke', '#60a5fa')
+      .attr('stroke-width', 2)
+      .attr('d', line);
 
     // Add moral consideration line if not uncoupled
     if (scenario.moralConsideration.type !== 'uncoupled') {
       const moralConsiderationData = generateMoralConsiderationData();
+      const lineWithGaps = d3.line()
+        .x(d => xScale(d.x))
+        .y(d => yScale(d.y))
+        .defined(d => d.y >= 1e6)  // Only draw line for points above minimum
+        .curve(d3.curveMonotoneX);
+
       svg.append('path')
         .datum(moralConsiderationData)
         .attr('fill', 'none')
         .attr('stroke', '#34d399')
         .attr('stroke-width', 2)
         .attr('stroke-dasharray', '4,4')
-        .attr('d', line);
+        .attr('d', lineWithGaps);
     }
 
     // Add legend
     const legend = svg.append('g')
       .attr('class', 'legend')
-      .attr('transform', `translate(${width - 150}, ${margin.top + 10})`);
+      .attr('transform', `translate(${width - margin.right + 20}, ${margin.top + 10})`);
 
     legend.append('line')
       .attr('x1', 0)
@@ -321,6 +389,23 @@
         .text('Moral Consideration');
     }
 
+    // Update legend to include human population reference
+    legend.append('line')
+      .attr('x1', 0)
+      .attr('x2', 20)
+      .attr('y1', 40) // Position below existing legend items
+      .attr('y2', 40)
+      .attr('stroke', '#fbbf24')
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '4,4');
+
+    legend.append('text')
+      .attr('x', 25)
+      .attr('y', 44)
+      .attr('class', 'text-sm')
+      .attr('fill', '#fbbf24')
+      .text('Human Population (~8B)');
+
     // Add title based on current scenario
     svg.append('text')
       .attr('x', width/2)
@@ -330,8 +415,7 @@
       .text(() => {
         const speed = scenario.speed.type === 'fast' ? 'Fast' : 'Slow';
         const progression = scenario.progression.type === 'gradual' ? 'Gradual' : 'Discontinuous';
-        const distribution = scenario.distribution.type === 'uniform' ? 'Uniform' : 'Disuniform';
-        return `${speed} ${progression} ${distribution} Takeoff`;
+        return `${speed} ${progression} Takeoff`;
       });
 
     // Update axis colors
@@ -366,7 +450,43 @@
 
   // Watch for scenario changes
   $: scenario, updateGraph();
+
+  // Add state to control narrative generation
+  let shouldGenerateNarrative = false;
+
+  // Update survey completion handler
+  async function handleSurveyComplete(event) {
+    console.log('Survey completed, initializing with scenario:', event.detail);
+    scenario = event.detail;
+    showSurvey = false;
+    shouldGenerateNarrative = true;  // Enable generation after survey
+    
+    await tick();
+    if (storyNarratorComponent) {
+      console.log('Calling generateAllNarrations from survey completion');
+      await storyNarratorComponent.generateAllNarrations();
+    } else {
+      console.error('StoryNarrator component not available');
+    }
+  }
+
+  // Add a bind to get access to StoryNarrator methods
+  let storyNarratorComponent;
+
+  // Add this helper function for formatting large numbers
+  function formatWelfareCapacity(value) {
+    if (value >= 1e9) {
+      return `${(value / 1e9).toFixed(1)}B human-equivalents`;
+    } else if (value >= 1e6) {
+      return `${(value / 1e6).toFixed(1)}M human-equivalents`;
+    }
+    return `${value.toFixed(0)} human-equivalents`;
+  }
 </script>
+
+{#if showSurvey}
+  <InitialSurveyModal on:complete={handleSurveyComplete} />
+{/if}
 
 <div class="container mx-auto p-6 font-sans text-gray-100">
   <h1 class="text-4xl font-bold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">
@@ -421,8 +541,8 @@
         <div class="space-y-2">
           <input 
             type="range" 
-            min="2024" 
-            max="2044" 
+            min="2025" 
+            max="2045" 
             class="w-full accent-primary"
             bind:value={scenario.timing.startYear}
           >
@@ -445,8 +565,8 @@
           class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300"
           bind:value={scenario.maxAltitude.type}
         >
-          <option value="low">📊 Low (~10B human equivalent)</option>
-          <option value="high">📈 High (100B+ human equivalent)</option>
+          <option value="low">📊 Low (~1T human equivalent)</option>
+          <option value="high">📈 High (100T+ human equivalent)</option>
         </select>
       </div>
 
@@ -467,26 +587,6 @@
         >
           <option value="gradual">📉 Gradual</option>
           <option value="discontinuous">📊 Discontinuous</option>
-        </select>
-      </div>
-
-      <!-- Distribution -->
-      <div class="parameter-group mt-6">
-        <div class="flex items-center gap-2 mb-2">
-          <h3 class="font-medium text-gray-300">Population Distribution</h3>
-          <div class="group relative inline-block">
-            <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-            <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-              How are different digital mind populations distributed?
-            </div>
-          </div>
-        </div>
-        <select 
-          class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300"
-          bind:value={scenario.distribution.type}
-        >
-          <option value="uniform">🎯 Uniform</option>
-          <option value="disuniform">🎲 Disuniform</option>
         </select>
       </div>
 
@@ -583,6 +683,48 @@
         </div>
         <div bind:this={graphContainer} class="w-full h-[400px] bg-gray-900 rounded-lg p-4"></div>
       </div>
+
+      <div class="mt-6 bg-gray-800 p-4 rounded-xl border border-gray-700">
+        <div class="flex items-center gap-4">
+          <h3 class="font-medium text-gray-300">Timeline</h3>
+          <input 
+            type="range" 
+            min="2025" 
+            max="2085" 
+            step="10"
+            class="w-full accent-primary"
+            bind:value={currentYear}
+          >
+          <div class="text-gray-300 font-mono w-16">{currentYear}</div>
+        </div>
+
+        <!-- Add discrete year markers below the slider -->
+        <div class="mt-2 flex justify-between text-xs text-gray-400 px-1">
+          {#each Array.from({length: 7}, (_, i) => 2025 + i * 10) as year}
+            <span>{year}</span>
+          {/each}
+        </div>
+
+        <button 
+          class="mt-4 px-4 py-2 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 
+                 text-white rounded-lg hover:opacity-90 transition-opacity"
+          on:click={() => {
+            const tempYear = currentYear;
+            currentYear = null;
+            setTimeout(() => currentYear = tempYear, 0);
+          }}
+        >
+          Regenerate Timeline
+        </button>
+      </div>
+
+      <StoryNarrator 
+        bind:this={storyNarratorComponent}
+        {scenario} 
+        {currentYear}
+        {generateCurveData}
+        shouldGenerate={shouldGenerateNarrative}
+      />
     </div>
   </div>
 </div>
