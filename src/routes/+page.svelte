@@ -1,8 +1,11 @@
 <script>
   import { onMount, tick } from 'svelte';
   import * as d3 from 'd3';
-  import StoryNarrator from '$lib/StoryNarrator.svelte';
-  import InitialSurveyModal from '$lib/InitialSurveyModal.svelte';
+  import StoryNarrator from '$lib/components/StoryNarrator.svelte';
+  import InitialSurveyModal from '$lib/components/InitialSurveyModal.svelte';
+  import { scenario } from '$lib/stores/scenarioStore';
+  import WelfareGraph from '$lib/components/WelfareGraph.svelte';
+  import ScenarioControls from '$lib/components/ScenarioControls.svelte';
 
   let graphContainer;
   let svg;
@@ -14,34 +17,6 @@
   let showSurvey = true;
 
   // Modified scenario state
-  let scenario = {
-    speed: {
-      type: 'moderate'
-    },
-    timing: {
-      startYear: 2025,
-      existentialSecurityAligned: false
-    },
-    maxAltitude: {
-      type: 'low'
-    },
-    launchHeight: {
-      type: 'low'
-    },
-    progression: {
-      type: 'gradual'
-    },
-    moralConsideration: {
-      type: 'delayed',
-      level: 0.5
-    },
-    expectedValue: {
-      credence: 50,
-      initialCapacity: 1e6,
-      maxCapacity: 1e10
-    }
-  };
-
   let currentYear = 2025;
 
   // First add the constant near the top of the file
@@ -69,7 +44,7 @@
     yScale = d3.scaleLog()
       .domain([1e6, Math.max(
         HUMAN_POPULATION_WELFARE * 1000,  // Show up to 1000x human population
-        scenario.maxAltitude.type === 'low' ? 1e12 : 1e14  // 1T or 100T
+        $scenario.maxAltitude.type === 'low' ? 1e12 : 1e14  // 1T or 100T
       )])
       .range([height - margin.bottom, margin.top]);
   }
@@ -136,25 +111,25 @@
     
     return Array.from({length: points}, (_, i) => {
       const x = startYear + (i * yearRange/points);
-      if (x < scenario.timing.startYear) {
+      if (x < $scenario.timing.startYear) {
         return { x, y: 1e6 };
       }
       
       let y;
-      const initialValue = Math.max(1e6, scenario.expectedValue?.initialCapacity || 
-                          (scenario.launchHeight.type === 'high' ? 1e8 : 1e6));
+      const initialValue = Math.max(1e6, $scenario.expectedValue?.initialCapacity || 
+                          ($scenario.launchHeight.type === 'high' ? 1e8 : 1e6));
       
       const progress = i/points;
       
-      if (scenario.progression.type === 'discontinuous') {
+      if ($scenario.progression.type === 'discontinuous') {
         // Create sharper jumps at specific points
         const jumpPoints = [0.3, 0.5, 0.7];
         const jumpIndex = jumpPoints.findIndex(jp => progress < jp);
         
         // Base growth rate depends on speed
         const growthRate = 
-          scenario.speed.type === 'fast' ? 5 :
-          scenario.speed.type === 'moderate' ? 4 : 3;
+          $scenario.speed.type === 'fast' ? 5 :
+          $scenario.speed.type === 'moderate' ? 4 : 3;
         
         // Calculate base value with exponential growth
         const baseY = initialValue * Math.pow(10, progress * growthRate);
@@ -164,20 +139,20 @@
       } else {
         // Smoother growth for gradual progression
         const growthRate = 
-          scenario.speed.type === 'fast' ? 5 :
-          scenario.speed.type === 'moderate' ? 4 : 3;
+          $scenario.speed.type === 'fast' ? 5 :
+          $scenario.speed.type === 'moderate' ? 4 : 3;
         
         y = initialValue * Math.pow(10, progress * growthRate);
       }
 
       // Apply maximum altitude limit
-      const maxY = scenario.expectedValue?.maxCapacity || 
-                  (scenario.maxAltitude.type === 'low' ? 1e12 : 1e14);
+      const maxY = $scenario.expectedValue?.maxCapacity || 
+                  ($scenario.maxAltitude.type === 'low' ? 1e12 : 1e14);
       y = Math.min(y, maxY);
 
       // Apply credence and moral consideration
-      const credence = (scenario.expectedValue?.credence || 50) / 100;
-      const moralLevel = scenario.moralConsideration.level;
+      const credence = ($scenario.expectedValue?.credence || 50) / 100;
+      const moralLevel = $scenario.moralConsideration.level;
       y = y * credence * moralLevel;
 
       // Ensure minimum value
@@ -209,16 +184,16 @@
     
     return Array.from({length: points}, (_, i) => {
       const x = startYear + (i * yearRange/points);
-      if (x < scenario.timing.startYear) {
+      if (x < $scenario.timing.startYear) {
         return { x, y: 1e6 };
       }
 
       const progress = i/points;
       const baseY = generateCurveData()[i].y;
-      const level = scenario.moralConsideration.level;
+      const level = $scenario.moralConsideration.level;
       
       let y;
-      switch(scenario.moralConsideration.type) {
+      switch($scenario.moralConsideration.type) {
         case 'coupled':
           y = baseY * level;
           break;
@@ -317,7 +292,7 @@
       .curve(d3.curveMonotoneX);
 
     // Add existential security background
-    if (!scenario.timing.existentialSecurityAligned) {
+    if (!$scenario.timing.existentialSecurityAligned) {
       svg.append('rect')
         .attr('x', margin.left)
         .attr('y', margin.top)
@@ -336,7 +311,7 @@
       .attr('d', line);
 
     // Add moral consideration line if not uncoupled
-    if (scenario.moralConsideration.type !== 'uncoupled') {
+    if ($scenario.moralConsideration.type !== 'uncoupled') {
       const moralConsiderationData = generateMoralConsiderationData();
       const lineWithGaps = d3.line()
         .x(d => xScale(d.x))
@@ -372,7 +347,7 @@
       .attr('class', 'text-sm')
       .text('Welfare Capacity');
 
-    if (scenario.moralConsideration.type !== 'uncoupled') {
+    if ($scenario.moralConsideration.type !== 'uncoupled') {
       legend.append('line')
         .attr('x1', 0)
         .attr('x2', 20)
@@ -413,8 +388,8 @@
       .attr('text-anchor', 'middle')
       .attr('class', 'text-lg font-semibold')
       .text(() => {
-        const speed = scenario.speed.type === 'fast' ? 'Fast' : 'Slow';
-        const progression = scenario.progression.type === 'gradual' ? 'Gradual' : 'Discontinuous';
+        const speed = $scenario.speed.type === 'fast' ? 'Fast' : 'Slow';
+        const progression = $scenario.progression.type === 'gradual' ? 'Gradual' : 'Discontinuous';
         return `${speed} ${progression} Takeoff`;
       });
 
@@ -449,24 +424,20 @@
   });
 
   // Watch for scenario changes
-  $: scenario, updateGraph();
+  $: $scenario, updateGraph();
 
   // Add state to control narrative generation
   let shouldGenerateNarrative = false;
 
   // Update survey completion handler
   async function handleSurveyComplete(event) {
-    console.log('Survey completed, initializing with scenario:', event.detail);
-    scenario = event.detail;
+    $scenario = event.detail;
     showSurvey = false;
-    shouldGenerateNarrative = true;  // Enable generation after survey
+    shouldGenerateNarrative = true;
     
     await tick();
     if (storyNarratorComponent) {
-      console.log('Calling generateAllNarrations from survey completion');
       await storyNarratorComponent.generateAllNarrations();
-    } else {
-      console.error('StoryNarrator component not available');
     }
   }
 
@@ -497,191 +468,21 @@
   </p>
 
   <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-    <!-- Left sidebar: Controls -->
-    <div class="bg-gradient-to-b from-gray-800 to-gray-900 p-8 rounded-xl shadow-lg border border-gray-700">
-      <h2 class="text-2xl font-semibold mb-6 text-gray-100 border-b border-gray-700 pb-4">
-        Shape Your Scenario
-      </h2>
-      
-      <!-- Speed Control -->
-      <div class="parameter-group">
-        <div class="flex items-center gap-2 mb-2">
-          <h3 class="font-medium text-gray-300">Speed</h3>
-          <div class="group relative inline-block">
-            <div class="cursor-help text-gray-500 hover:text-gray-300 text-sm">(what's this?)</div>
-            <div class="invisible group-hover:visible absolute z-10 w-64 p-3 mt-1 text-sm leading-relaxed text-gray-300 bg-gray-800 rounded-xl shadow-xl border border-gray-700 -translate-x-1/2 left-1/2">
-              <span class="block font-medium mb-1">Takeoff Speed</span>
-              How quickly digital minds' welfare capacity increases - this can dramatically affect how prepared we are for their emergence.
-            </div>
-          </div>
-        </div>
-        <div class="relative">
-          <select 
-            class="w-full p-3 border rounded-xl bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300
-                   border-gray-700 focus:ring-2 focus:ring-purple-500 focus:outline-none"
-            bind:value={scenario.speed.type}
-          >
-            <option value="slow">Slow</option>
-            <option value="fast">Fast</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Timing Control -->
-      <div class="parameter-group mt-6">
-        <div class="flex items-center gap-2 mb-2">
-          <h3 class="font-medium text-gray-300">Start Year</h3>
-          <div class="group relative inline-block">
-            <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-            <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-              When does the takeoff begin?
-            </div>
-          </div>
-        </div>
-        <div class="space-y-2">
-          <input 
-            type="range" 
-            min="2025" 
-            max="2045" 
-            class="w-full accent-primary"
-            bind:value={scenario.timing.startYear}
-          >
-          <div class="text-sm text-gray-300 font-mono">📅 {scenario.timing.startYear}</div>
-        </div>
-      </div>
-
-      <!-- Maximum Altitude -->
-      <div class="parameter-group mt-6">
-        <div class="flex items-center gap-2 mb-2">
-          <h3 class="font-medium text-gray-300">Maximum Altitude</h3>
-          <div class="group relative inline-block">
-            <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-            <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-              The peak welfare capacity level
-            </div>
-          </div>
-        </div>
-        <select 
-          class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300"
-          bind:value={scenario.maxAltitude.type}
-        >
-          <option value="low">📊 Low (~1T human equivalent)</option>
-          <option value="high">📈 High (100T+ human equivalent)</option>
-        </select>
-      </div>
-
-      <!-- Progression Type -->
-      <div class="parameter-group mt-6">
-        <div class="flex items-center gap-2 mb-2">
-          <h3 class="font-medium text-gray-300">Progression Style</h3>
-          <div class="group relative inline-block">
-            <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-            <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-              How smooth is the growth?
-            </div>
-          </div>
-        </div>
-        <select 
-          class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300"
-          bind:value={scenario.progression.type}
-        >
-          <option value="gradual">📉 Gradual</option>
-          <option value="discontinuous">📊 Discontinuous</option>
-        </select>
-      </div>
-
-      <!-- Advanced Parameters -->
-      <div class="mt-12">
-        <h3 class="text-lg font-semibold mb-6 text-gray-100 border-b border-gray-700 pb-4">
-          Advanced Considerations
-        </h3>
-        
-        <!-- Existential Security -->
-        <div class="parameter-group mt-4">
-          <div class="flex items-center gap-2 mb-2">
-            <h3 class="font-medium text-gray-300">Existential Security</h3>
-            <div class="group relative inline-block">
-              <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-              <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-                Is humanity secure from existential risks?
-              </div>
-            </div>
-          </div>
-          <select 
-            class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300"
-            bind:value={scenario.timing.existentialSecurityAligned}
-          >
-            <option value={false}>⚠️ Pre-Security</option>
-            <option value={true}>🛡️ Post-Security</option>
-          </select>
-        </div>
-
-        <!-- Launch Height -->
-        <div class="parameter-group mt-4">
-          <div class="flex items-center gap-2 mb-2">
-            <h3 class="font-medium text-gray-300">Launch Height</h3>
-            <div class="group relative inline-block">
-              <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-              <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-                Initial welfare capacity level
-              </div>
-            </div>
-          </div>
-          <select 
-            class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300"
-            bind:value={scenario.launchHeight.type}
-          >
-            <option value="low">🌱 Low Launch</option>
-            <option value="high">🚀 High Launch</option>
-          </select>
-        </div>
-
-        <!-- Moral Consideration -->
-        <div class="parameter-group mt-4">
-          <div class="flex items-center gap-2 mb-2">
-            <h3 class="font-medium text-gray-300">Moral Consideration</h3>
-            <div class="group relative inline-block">
-              <div class="cursor-help text-gray-500 hover:text-gray-300">ℹ️</div>
-              <div class="invisible group-hover:visible absolute z-10 w-48 p-2 mt-1 text-sm text-gray-300 bg-gray-800 rounded-lg shadow-lg border border-gray-700 -translate-x-1/2 left-1/2">
-                How does moral consideration evolve with welfare capacity?
-              </div>
-            </div>
-          </div>
-          <select 
-            class="w-full p-3 border rounded-lg bg-gray-900 hover:bg-gray-800 transition-colors text-gray-300 mb-2"
-            bind:value={scenario.moralConsideration.type}
-          >
-            <option value="coupled">🤝 Coupled</option>
-            <option value="uncoupled">↔️ Uncoupled</option>
-            <option value="decoupling">📉 Decoupling</option>
-            <option value="delayed">⏳ Delayed</option>
-          </select>
-          <input 
-            type="range" 
-            min="0" 
-            max="1" 
-            step="0.1"
-            class="w-full accent-primary"
-            bind:value={scenario.moralConsideration.level}
-          >
-          <div class="text-sm text-gray-300 font-mono">Level: {scenario.moralConsideration.level.toFixed(1)}</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Main content: Graph -->
+    <ScenarioControls />
+    
     <div class="md:col-span-2">
       <div class="bg-gradient-to-b from-gray-800 to-gray-900 p-8 rounded-xl shadow-lg border border-gray-700">
         <div class="mb-6">
           <h3 class="text-xl font-medium text-gray-100 mb-2">
-            {scenario.speed.type === 'fast' ? 'Fast' : 'Slow'} 
-            {scenario.progression.type === 'gradual' ? 'Gradual' : 'Discontinuous'} Takeoff
+            {$scenario.speed.type === 'fast' ? 'Fast' : 'Slow'} 
+            {$scenario.progression.type === 'gradual' ? 'Gradual' : 'Discontinuous'} Takeoff
           </h3>
           <p class="text-gray-400 text-sm">
             Visualizing how digital minds might develop under these conditions
           </p>
         </div>
-        <div bind:this={graphContainer} class="w-full h-[400px] bg-gray-900 rounded-lg p-4"></div>
+        
+        <WelfareGraph {currentYear} />
       </div>
 
       <div class="mt-6 bg-gray-800 p-4 rounded-xl border border-gray-700">
@@ -720,9 +521,8 @@
 
       <StoryNarrator 
         bind:this={storyNarratorComponent}
-        {scenario} 
+        scenario={$scenario}
         {currentYear}
-        {generateCurveData}
         shouldGenerate={shouldGenerateNarrative}
       />
     </div>
@@ -734,48 +534,5 @@
     background-color: #111827; /* gray-900 */
     background-image: radial-gradient(#374151 0.5px, transparent 0.5px);
     background-size: 15px 15px;
-  }
-  
-  :global(.tick text) {
-    font-family: system-ui, -apple-system, sans-serif;
-    fill: #9ca3af; /* gray-400 */
-  }
-
-  .parameter-group {
-    @apply mb-8 transition-all duration-200 ease-in-out;
-  }
-
-  .parameter-group:hover {
-    @apply transform translate-x-1;
-  }
-
-  /* Custom range input styling */
-  input[type="range"] {
-    @apply h-2 rounded-full appearance-none cursor-pointer bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500;
-  }
-
-  input[type="range"]::-webkit-slider-thumb {
-    @apply appearance-none w-4 h-4 rounded-full bg-gray-900 shadow-lg border-2 border-purple-400;
-  }
-
-  select {
-    @apply border-gray-700 bg-gray-900 text-gray-300;
-  }
-
-  select:focus {
-    @apply border-purple-500;
-  }
-
-  /* Update graph colors */
-  :global(.grid line) {
-    stroke: #374151; /* gray-700 */
-  }
-
-  :global(.domain) {
-    stroke: #4b5563; /* gray-600 */
-  }
-
-  :global(.tick line) {
-    stroke: #374151; /* gray-700 */
   }
 </style>
